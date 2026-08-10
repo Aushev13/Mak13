@@ -4,4 +4,4 @@ openpyxl
 reportlab
 pdfplumber
 numpy
-Pillow
+Pillow 
