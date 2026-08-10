@@ -42,10 +42,8 @@ if 'kp_date' not in st.session_state:
     st.session_state.kp_date = datetime.today().strftime('%d.%m.%Y')
 if 'last_kp_number' not in st.session_state:
     st.session_state.last_kp_number = 0
-# Для хранения нормализованного датафрейма
 if 'normalized_df' not in st.session_state:
     st.session_state.normalized_df = None
-# Для хранения имени загруженного файла, чтобы сбрасывать при новом файле
 if 'uploaded_filename' not in st.session_state:
     st.session_state.uploaded_filename = None
 
@@ -120,7 +118,7 @@ with st.sidebar:
             st.session_state['sign_position'] = data.get('sign_position', 'Генеральный директор')
             st.session_state['sign_name'] = data.get('sign_name', 'Иванов И.И.')
             st.success("✅ Профиль загружен!")
-            st.experimental_rerun()
+            st.rerun()
         except Exception as e:
             st.error(f"Ошибка загрузки профиля: {e}")
 
@@ -349,9 +347,7 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
     return buffer
 
 # ---------- Основной процесс ----------
-# Если загружен файл, обрабатываем
 if uploaded_file is not None:
-    # Проверяем, новый ли это файл (по имени), чтобы сбросить старый нормализованный df
     current_filename = uploaded_file.name
     if st.session_state.uploaded_filename != current_filename:
         st.session_state.normalized_df = None
@@ -373,13 +369,11 @@ if uploaded_file is not None:
         st.subheader("📄 Данные из файла (сырые)")
         st.dataframe(df_raw.head(10))
 
-        # Если нормализованный df ещё не получен
         if st.session_state.normalized_df is None:
-            # Попытка автоматической нормализации
             df_norm = normalize_columns_auto(df_raw)
             if df_norm is not None:
                 st.session_state.normalized_df = df_norm
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.warning("Не удалось автоматически определить колонки. Выберите соответствие вручную:")
                 cols = list(df_raw.columns)
@@ -404,14 +398,11 @@ if uploaded_file is not None:
                         df = apply_manual_mapping(df_raw, mapping)
                         if df is not None:
                             st.session_state.normalized_df = df
-                            st.experimental_rerun()
+                            st.rerun()
                         else:
                             st.error("Ошибка при применении маппинга. Проверьте данные.")
         else:
-            # Нормализованный df уже есть — работаем с ним
             df = st.session_state.normalized_df
-
-            # Редактируемая таблица
             st.subheader("✏️ Редактирование данных")
             if '№' not in df.columns:
                 df.insert(0, '№', range(1, len(df)+1))
@@ -485,6 +476,5 @@ if uploaded_file is not None:
     except Exception as e:
         st.error(f"Ошибка: {e}")
 else:
-    # Если файл не загружен, сбрасываем нормализованный df
     st.session_state.normalized_df = None
     st.info("Загрузите накладную (Excel или PDF), и приложение поможет вам сопоставить колонки.")
