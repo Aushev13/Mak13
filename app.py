@@ -42,6 +42,12 @@ if 'kp_date' not in st.session_state:
     st.session_state.kp_date = datetime.today().strftime('%d.%m.%Y')
 if 'last_kp_number' not in st.session_state:
     st.session_state.last_kp_number = 0
+# Для хранения нормализованного датафрейма
+if 'normalized_df' not in st.session_state:
+    st.session_state.normalized_df = None
+# Для хранения имени загруженного файла, чтобы сбрасывать при новом файле
+if 'uploaded_filename' not in st.session_state:
+    st.session_state.uploaded_filename = None
 
 # ---------- Боковая панель ----------
 with st.sidebar:
@@ -173,7 +179,7 @@ def normalize_columns_auto(df):
     required = ['Наименование', 'Количество', 'Цена', 'Сумма']
     missing = [r for r in required if r not in col_map]
     if missing:
-        return None  # не удалось автоматически
+        return None
 
     rename_dict = {v: k for k, v in col_map.items() if k in required}
     df = df.rename(columns=rename_dict)
@@ -188,17 +194,14 @@ def normalize_columns_auto(df):
     return df
 
 def apply_manual_mapping(df, col_map):
-    # Переименовываем обязательные колонки
     rename_dict = {v: k for k, v in col_map.items() if k in ['Наименование', 'Количество', 'Цена', 'Сумма']}
     df = df.rename(columns=rename_dict)
     required = ['Наименование', 'Количество', 'Цена', 'Сумма']
     df = df[required]
-    # Преобразуем числовые колонки
     for col in ['Количество', 'Цена', 'Сумма']:
         df[col] = df[col].astype(str).str.replace(',', '.').str.replace(' ', '')
         df[col] = pd.to_numeric(df[col], errors='coerce')
     df = df.dropna(subset=['Количество', 'Цена', 'Сумма'])
-    # Добавляем Ед. изм., если выбрана колонка и она существует
     if 'Ед. изм.' in col_map and col_map['Ед. изм.'] and col_map['Ед. изм.'] in df.columns:
         df['Ед. изм.'] = df[col_map['Ед. изм.']]
     else:
@@ -346,7 +349,14 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
     return buffer
 
 # ---------- Основной процесс ----------
+# Если загружен файл, обрабатываем
 if uploaded_file is not None:
+    # Проверяем, новый ли это файл (по имени), чтобы сбросить старый нормализованный df
+    current_filename = uploaded_file.name
+    if st.session_state.uploaded_filename != current_filename:
+        st.session_state.normalized_df = None
+        st.session_state.uploaded_filename = current_filename
+
     file_extension = uploaded_file.name.split('.')[-1].lower()
     try:
         if file_extension == 'xlsx':
@@ -363,109 +373,118 @@ if uploaded_file is not None:
         st.subheader("📄 Данные из файла (сырые)")
         st.dataframe(df_raw.head(10))
 
-        # Пытаемся автоматически нормализовать
-        df_norm = normalize_columns_auto(df_raw)
-        if df_norm is not None:
-            df = df_norm
-        else:
-            st.warning("Не удалось автоматически определить колонки. Выберите соответствие вручную:")
-            cols = list(df_raw.columns)
-            col_name = st.selectbox("Выберите колонку для 'Наименование'", options=[''] + cols, key='manual_name')
-            col_qty = st.selectbox("Выберите колонку для 'Количество'", options=[''] + cols, key='manual_qty')
-            col_price = st.selectbox("Выберите колонку для 'Цена'", options=[''] + cols, key='manual_price')
-            col_sum = st.selectbox("Выберите колонку для 'Сумма'", options=[''] + cols, key='manual_sum')
-            col_unit = st.selectbox("Выберите колонку для 'Ед. изм.' (необязательно)", options=[''] + cols, key='manual_unit')
+        # Если нормализованный df ещё не получен
+        if st.session_state.normalized_df is None:
+            # Попытка автоматической нормализации
+            df_norm = normalize_columns_auto(df_raw)
+            if df_norm is not None:
+                st.session_state.normalized_df = df_norm
+                st.experimental_rerun()
+            else:
+                st.warning("Не удалось автоматически определить колонки. Выберите соответствие вручную:")
+                cols = list(df_raw.columns)
+                col_name = st.selectbox("Выберите колонку для 'Наименование'", options=[''] + cols, key='manual_name')
+                col_qty = st.selectbox("Выберите колонку для 'Количество'", options=[''] + cols, key='manual_qty')
+                col_price = st.selectbox("Выберите колонку для 'Цена'", options=[''] + cols, key='manual_price')
+                col_sum = st.selectbox("Выберите колонку для 'Сумма'", options=[''] + cols, key='manual_sum')
+                col_unit = st.selectbox("Выберите колонку для 'Ед. изм.' (необязательно)", options=[''] + cols, key='manual_unit')
 
-            if st.button("Применить ручное сопоставление"):
-                if not all([col_name, col_qty, col_price, col_sum]):
-                    st.error("❌ Выберите все обязательные колонки (Наименование, Количество, Цена, Сумма).")
-                    st.stop()
-                else:
-                    mapping = {
-                        'Наименование': col_name,
-                        'Количество': col_qty,
-                        'Цена': col_price,
-                        'Сумма': col_sum
-                    }
-                    if col_unit:
-                        mapping['Ед. изм.'] = col_unit
-                    df = apply_manual_mapping(df_raw, mapping)
-                    if df is None:
-                        st.error("Ошибка при применении маппинга. Проверьте данные.")
-                        st.stop()
-
-        # Редактируемая таблица
-        st.subheader("✏️ Редактирование данных")
-        if '№' not in df.columns:
-            df.insert(0, '№', range(1, len(df)+1))
-        df['№'] = df['№'].astype(int)
-        edited_df = st.data_editor(
-            df,
-            column_config={
-                "№": st.column_config.NumberColumn("№", disabled=True),
-                "Наименование": st.column_config.TextColumn("Наименование"),
-                "Количество": st.column_config.NumberColumn("Кол-во", min_value=0, step=1),
-                "Ед. изм.": st.column_config.TextColumn("Ед."),
-                "Цена": st.column_config.NumberColumn("Цена (была)", min_value=0, step=0.01, format="%.2f"),
-                "Сумма": st.column_config.NumberColumn("Сумма", disabled=True, format="%.2f"),
-            },
-            num_rows="dynamic",
-            key="editor"
-        )
-        if not edited_df.empty:
-            edited_df["Сумма"] = edited_df["Количество"] * edited_df["Цена"]
-            df = edited_df
-
-        old_total = df["Сумма"].sum()
-        new_total = old_total * (1 + markup_percent/100)
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Старая сумма", f"{old_total:,.2f} ₽")
-        col2.metric("Новая сумма", f"{new_total:,.2f} ₽", delta=f"{new_total - old_total:,.2f} ₽")
-
-        if not st.session_state.supplier['name']:
-            st.warning("⚠️ Заполните реквизиты поставщика в боковой панели.")
-        if not buyer_name:
-            st.warning("⚠️ Укажите название покупателя.")
-
-        col_btn1, col_btn2, col_btn3 = st.columns(3)
-        with col_btn1:
-            if st.button("📥 Скачать КП", type="primary"):
-                st.session_state.kp_number = kp_number
-                st.session_state.kp_date = kp_date
-                try:
-                    entered_num = int(kp_number) if kp_number else 0
-                    if entered_num > st.session_state.last_kp_number:
-                        st.session_state.last_kp_number = entered_num
+                if st.button("Применить ручное сопоставление"):
+                    if not all([col_name, col_qty, col_price, col_sum]):
+                        st.error("❌ Выберите все обязательные колонки (Наименование, Количество, Цена, Сумма).")
                     else:
+                        mapping = {
+                            'Наименование': col_name,
+                            'Количество': col_qty,
+                            'Цена': col_price,
+                            'Сумма': col_sum
+                        }
+                        if col_unit:
+                            mapping['Ед. изм.'] = col_unit
+                        df = apply_manual_mapping(df_raw, mapping)
+                        if df is not None:
+                            st.session_state.normalized_df = df
+                            st.experimental_rerun()
+                        else:
+                            st.error("Ошибка при применении маппинга. Проверьте данные.")
+        else:
+            # Нормализованный df уже есть — работаем с ним
+            df = st.session_state.normalized_df
+
+            # Редактируемая таблица
+            st.subheader("✏️ Редактирование данных")
+            if '№' not in df.columns:
+                df.insert(0, '№', range(1, len(df)+1))
+            df['№'] = df['№'].astype(int)
+            edited_df = st.data_editor(
+                df,
+                column_config={
+                    "№": st.column_config.NumberColumn("№", disabled=True),
+                    "Наименование": st.column_config.TextColumn("Наименование"),
+                    "Количество": st.column_config.NumberColumn("Кол-во", min_value=0, step=1),
+                    "Ед. изм.": st.column_config.TextColumn("Ед."),
+                    "Цена": st.column_config.NumberColumn("Цена (была)", min_value=0, step=0.01, format="%.2f"),
+                    "Сумма": st.column_config.NumberColumn("Сумма", disabled=True, format="%.2f"),
+                },
+                num_rows="dynamic",
+                key="editor"
+            )
+            if not edited_df.empty:
+                edited_df["Сумма"] = edited_df["Количество"] * edited_df["Цена"]
+                df = edited_df
+
+            old_total = df["Сумма"].sum()
+            new_total = old_total * (1 + markup_percent/100)
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Старая сумма", f"{old_total:,.2f} ₽")
+            col2.metric("Новая сумма", f"{new_total:,.2f} ₽", delta=f"{new_total - old_total:,.2f} ₽")
+
+            if not st.session_state.supplier['name']:
+                st.warning("⚠️ Заполните реквизиты поставщика в боковой панели.")
+            if not buyer_name:
+                st.warning("⚠️ Укажите название покупателя.")
+
+            col_btn1, col_btn2, col_btn3 = st.columns(3)
+            with col_btn1:
+                if st.button("📥 Скачать КП", type="primary"):
+                    st.session_state.kp_number = kp_number
+                    st.session_state.kp_date = kp_date
+                    try:
+                        entered_num = int(kp_number) if kp_number else 0
+                        if entered_num > st.session_state.last_kp_number:
+                            st.session_state.last_kp_number = entered_num
+                        else:
+                            st.session_state.last_kp_number += 1
+                    except:
                         st.session_state.last_kp_number += 1
-                except:
-                    st.session_state.last_kp_number += 1
-                pdf_buffer = generate_pdf(
-                    df, markup_percent, old_total, new_total,
-                    st.session_state.supplier, buyer_name, buyer_inn,
-                    st.session_state.logo_bytes, st.session_state.signature_bytes, st.session_state.stamp_bytes,
-                    sign_position, sign_name, kp_number, kp_date,
-                    st.session_state.payment_terms
-                )
-                st.download_button(
-                    label="📥 Скачать PDF",
-                    data=pdf_buffer,
-                    file_name=f"KP_{kp_number if kp_number else 'без_номера'}.pdf",
-                    mime="application/pdf"
-                )
-        with col_btn2:
-            if st.button("📧 Отправить на почту"):
-                if not buyer_email:
-                    st.warning("Укажите email покупателя.")
-                elif not st.session_state.supplier['name']:
-                    st.warning("Заполните реквизиты поставщика.")
-                else:
-                    st.info(f"📧 Отправка на {buyer_email} ... (в реальном приложении добавьте SMTP)")
-        with col_btn3:
-            if st.button("🔗 Получить ссылку"):
-                st.info("🔗 Демо-ссылка: https://disk.yandex.ru/d/example (в реальном приложении загрузите на Яндекс Диск)")
+                    pdf_buffer = generate_pdf(
+                        df, markup_percent, old_total, new_total,
+                        st.session_state.supplier, buyer_name, buyer_inn,
+                        st.session_state.logo_bytes, st.session_state.signature_bytes, st.session_state.stamp_bytes,
+                        sign_position, sign_name, kp_number, kp_date,
+                        st.session_state.payment_terms
+                    )
+                    st.download_button(
+                        label="📥 Скачать PDF",
+                        data=pdf_buffer,
+                        file_name=f"KP_{kp_number if kp_number else 'без_номера'}.pdf",
+                        mime="application/pdf"
+                    )
+            with col_btn2:
+                if st.button("📧 Отправить на почту"):
+                    if not buyer_email:
+                        st.warning("Укажите email покупателя.")
+                    elif not st.session_state.supplier['name']:
+                        st.warning("Заполните реквизиты поставщика.")
+                    else:
+                        st.info(f"📧 Отправка на {buyer_email} ... (в реальном приложении добавьте SMTP)")
+            with col_btn3:
+                if st.button("🔗 Получить ссылку"):
+                    st.info("🔗 Демо-ссылка: https://disk.yandex.ru/d/example (в реальном приложении загрузите на Яндекс Диск)")
 
     except Exception as e:
         st.error(f"Ошибка: {e}")
 else:
+    # Если файл не загружен, сбрасываем нормализованный df
+    st.session_state.normalized_df = None
     st.info("Загрузите накладную (Excel или PDF), и приложение поможет вам сопоставить колонки.")
