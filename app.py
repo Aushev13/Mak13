@@ -14,10 +14,10 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
- 
+
 st.set_page_config(page_title="Генератор КП", layout="wide")
 st.title("📄 Генератор коммерческого предложения")
- 
+
 # ---------- Инициализация сессионных переменных ----------
 if 'supplier' not in st.session_state:
     st.session_state.supplier = {
@@ -42,7 +42,7 @@ if 'kp_date' not in st.session_state:
     st.session_state.kp_date = datetime.today().strftime('%d.%m.%Y')
 if 'last_kp_number' not in st.session_state:
     st.session_state.last_kp_number = 0
- 
+
 # ---------- Боковая панель ----------
 with st.sidebar:
     st.header("🏢 Ваши реквизиты")
@@ -117,7 +117,7 @@ with st.sidebar:
             st.experimental_rerun()
         except Exception as e:
             st.error(f"Ошибка загрузки профиля: {e}")
- 
+
 # ---------- Основная часть ----------
 col1, col2 = st.columns(2)
 with col1:
@@ -127,16 +127,16 @@ with col2:
     buyer_name = st.text_input("Название организации покупателя")
     buyer_inn = st.text_input("ИНН покупателя")
     buyer_email = st.text_input("Email покупателя (для отправки КП)")
- 
+
 next_number = st.session_state.last_kp_number + 1
 col3, col4 = st.columns(2)
 with col3:
     kp_number = st.text_input("№ КП", value=str(next_number))
 with col4:
     kp_date = st.text_input("Дата КП", value=st.session_state.kp_date)
- 
+
 markup_percent = st.slider("Наценка (%)", 0, 200, 25, key="markup")
- 
+
 # ---------- Функции обработки ----------
 def extract_table_from_pdf(pdf_file):
     with pdfplumber.open(pdf_file) as pdf:
@@ -152,12 +152,10 @@ def extract_table_from_pdf(pdf_file):
         headers = all_rows[0]
         data = all_rows[1:]
         return pd.DataFrame(data, columns=headers)
- 
-def normalize_columns(df, manual=False):
-    # Приводим названия колонок к нижнему регистру
+
+def normalize_columns_auto(df):
     df.columns = [col.lower().strip() for col in df.columns]
     col_map = {}
-    # Автоматический поиск
     for col in df.columns:
         if 'наимен' in col or 'товар' in col or 'назван' in col or 'описан' in col:
             col_map['Наименование'] = col
@@ -171,44 +169,12 @@ def normalize_columns(df, manual=False):
             col_map['Ед. изм.'] = col
         elif '№' in col or 'п/п' in col or 'номер' in col:
             col_map['№'] = col
- 
+
     required = ['Наименование', 'Количество', 'Цена', 'Сумма']
- 
-    if manual:
-        st.warning("Выберите соответствие колонок вручную:")
-        for r in required:
-            selected = st.selectbox(f"Выберите колонку для '{r}'", options=[''] + list(df.columns), key=f"col_{r}")
-            if selected:
-                col_map[r] = selected
-        # Проверим, все ли выбраны
-        if not all(r in col_map for r in required):
-            st.error("❌ Вы не выбрали все необходимые колонки.")
-            return None
-        # Переименовываем
-        rename_dict = {v: k for k, v in col_map.items() if k in required}
-        df = df.rename(columns=rename_dict)
-        # Оставляем только нужные колонки
-        df = df[required]
-        # Добавляем Ед. изм. если есть, иначе 'шт'
-        if 'Ед. изм.' in col_map and col_map['Ед. изм.'] in df.columns:
-            df['Ед. изм.'] = df[col_map['Ед. изм.']]
-        else:
-            df['Ед. изм.'] = 'шт'
-        # Преобразуем числовые колонки
-        for col in ['Количество', 'Цена', 'Сумма']:
-            df[col] = df[col].astype(str).str.replace(',', '.').str.replace(' ', '')
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        df = df.dropna(subset=['Количество', 'Цена', 'Сумма'])
-        return df
- 
-    # Автоматический режим
     missing = [r for r in required if r not in col_map]
     if missing:
-        # Не удалось автоматически
-        st.session_state.auto_failed = True
-        st.session_state.all_columns = list(df.columns)
-        return None
- 
+        return None  # не удалось автоматически
+
     rename_dict = {v: k for k, v in col_map.items() if k in required}
     df = df.rename(columns=rename_dict)
     for col in ['Количество', 'Цена', 'Сумма']:
@@ -220,7 +186,22 @@ def normalize_columns(df, manual=False):
     else:
         df['Ед. изм.'] = 'шт'
     return df
- 
+
+def apply_manual_mapping(df, col_map):
+    rename_dict = {v: k for k, v in col_map.items() if k in ['Наименование', 'Количество', 'Цена', 'Сумма']}
+    df = df.rename(columns=rename_dict)
+    required = ['Наименование', 'Количество', 'Цена', 'Сумма']
+    df = df[required]
+    for col in ['Количество', 'Цена', 'Сумма']:
+        df[col] = df[col].astype(str).str.replace(',', '.').str.replace(' ', '')
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df = df.dropna(subset=['Количество', 'Цена', 'Сумма'])
+    if 'Ед. изм.' in col_map:
+        df['Ед. изм.'] = df[col_map['Ед. изм.']]
+    else:
+        df['Ед. изм.'] = 'шт'
+    return df
+
 def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_inn,
                  logo_bytes, signature_bytes, stamp_bytes, sign_position, sign_name,
                  kp_number, kp_date, payment_terms):
@@ -360,41 +341,57 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
     doc.build(elements)
     buffer.seek(0)
     return buffer
- 
+
 # ---------- Основной процесс ----------
 if uploaded_file is not None:
     file_extension = uploaded_file.name.split('.')[-1].lower()
     try:
         if file_extension == 'xlsx':
-            df = pd.read_excel(uploaded_file, engine='openpyxl')
+            df_raw = pd.read_excel(uploaded_file, engine='openpyxl')
         elif file_extension == 'pdf':
-            df = extract_table_from_pdf(uploaded_file)
-            if df is None:
+            df_raw = extract_table_from_pdf(uploaded_file)
+            if df_raw is None:
                 st.error("❌ Не удалось извлечь таблицу из PDF. Убедитесь, что PDF текстовый (не скан).")
                 st.stop()
         else:
             st.error("❌ Неподдерживаемый формат. Только XLSX и PDF.")
             st.stop()
- 
+
         st.subheader("📄 Данные из файла (сырые)")
-        st.dataframe(df.head(10))
- 
-        if 'auto_failed' in st.session_state and st.session_state.auto_failed:
-            df = normalize_columns(df, manual=True)
-            if df is None:
-                st.stop()
-            st.session_state.auto_failed = False
+        st.dataframe(df_raw.head(10))
+
+        # Пытаемся автоматически нормализовать
+        df_norm = normalize_columns_auto(df_raw)
+        if df_norm is not None:
+            df = df_norm
         else:
-            df = normalize_columns(df, manual=False)
-            if df is None:
-                st.info("Автоматическое определение не удалось. Нажмите кнопку ниже, чтобы выбрать колонки вручную.")
-                if st.button("Выбрать колонки вручную"):
-                    df = normalize_columns(df, manual=True)
-                    if df is None:
-                        st.stop()
-                else:
+            st.warning("Не удалось автоматически определить колонки. Выберите соответствие вручную:")
+            cols = list(df_raw.columns)
+            col_name = st.selectbox("Выберите колонку для 'Наименование'", options=[''] + cols, key='manual_name')
+            col_qty = st.selectbox("Выберите колонку для 'Количество'", options=[''] + cols, key='manual_qty')
+            col_price = st.selectbox("Выберите колонку для 'Цена'", options=[''] + cols, key='manual_price')
+            col_sum = st.selectbox("Выберите колонку для 'Сумма'", options=[''] + cols, key='manual_sum')
+            col_unit = st.selectbox("Выберите колонку для 'Ед. изм.' (необязательно)", options=[''] + cols, key='manual_unit')
+
+            if st.button("Применить ручное сопоставление"):
+                if not all([col_name, col_qty, col_price, col_sum]):
+                    st.error("❌ Выберите все обязательные колонки (Наименование, Количество, Цена, Сумма).")
                     st.stop()
- 
+                else:
+                    mapping = {
+                        'Наименование': col_name,
+                        'Количество': col_qty,
+                        'Цена': col_price,
+                        'Сумма': col_sum
+                    }
+                    if col_unit:
+                        mapping['Ед. изм.'] = col_unit
+                    df = apply_manual_mapping(df_raw, mapping)
+                    if df is None:
+                        st.error("Ошибка при применении маппинга. Проверьте данные.")
+                        st.stop()
+
+        # Редактируемая таблица
         st.subheader("✏️ Редактирование данных")
         if '№' not in df.columns:
             df.insert(0, '№', range(1, len(df)+1))
@@ -415,15 +412,18 @@ if uploaded_file is not None:
         if not edited_df.empty:
             edited_df["Сумма"] = edited_df["Количество"] * edited_df["Цена"]
             df = edited_df
+
         old_total = df["Сумма"].sum()
         new_total = old_total * (1 + markup_percent/100)
         col1, col2, col3 = st.columns(3)
         col1.metric("Старая сумма", f"{old_total:,.2f} ₽")
         col2.metric("Новая сумма", f"{new_total:,.2f} ₽", delta=f"{new_total - old_total:,.2f} ₽")
+
         if not st.session_state.supplier['name']:
             st.warning("⚠️ Заполните реквизиты поставщика в боковой панели.")
         if not buyer_name:
             st.warning("⚠️ Укажите название покупателя.")
+
         col_btn1, col_btn2, col_btn3 = st.columns(3)
         with col_btn1:
             if st.button("📥 Скачать КП", type="primary"):
@@ -461,7 +461,8 @@ if uploaded_file is not None:
         with col_btn3:
             if st.button("🔗 Получить ссылку"):
                 st.info("🔗 Демо-ссылка: https://disk.yandex.ru/d/example (в реальном приложении загрузите на Яндекс Диск)")
+
     except Exception as e:
         st.error(f"Ошибка: {e}")
 else:
-    st.info("Загрузите накладную (Excel или PDF), отредактируйте данные и выберите действие.")
+    st.info("Загрузите накладную (Excel или PDF), и приложение поможет вам сопоставить колонки.")
