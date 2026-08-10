@@ -49,7 +49,7 @@ if 'uploaded_filename' not in st.session_state:
 
 # ---------- Боковая панель ----------
 with st.sidebar:
-    st.header("🏢 Ваши реквизиты")
+    st.header("🏢 Реквизиты поставщика")
     supplier_name = st.text_input("Название организации", value=st.session_state.supplier['name'])
     supplier_inn = st.text_input("ИНН", value=st.session_state.supplier['inn'])
     supplier_kpp = st.text_input("КПП", value=st.session_state.supplier['kpp'])
@@ -130,7 +130,7 @@ with col2:
     st.subheader("Покупатель")
     buyer_name = st.text_input("Название организации покупателя")
     buyer_inn = st.text_input("ИНН покупателя")
-    buyer_email = st.text_input("Email покупателя (для отправки КП)")
+    buyer_email = st.text_input("Email для отправки КП")
 
 next_number = st.session_state.last_kp_number + 1
 col3, col4 = st.columns(2)
@@ -158,53 +158,123 @@ def extract_table_from_pdf(pdf_file):
         return pd.DataFrame(data, columns=headers)
 
 def normalize_columns_auto(df):
-    df.columns = [col.lower().strip() for col in df.columns]
+    """
+    Автоматически определяет колонки: Наименование, Количество, Цена, Сумма, Ед. изм.
+    Использует расширенный поиск по синонимам и анализ данных.
+    """
+    # Приводим названия колонок к нижнему регистру и чистим
+    df.columns = [str(col).lower().strip().replace(' ', '').replace('_', '').replace('.', '').replace('№', 'n') for col in df.columns]
+    
+    # Синонимы для каждой целевой колонки
+    synonyms = {
+        'Наименование': ['наименование', 'наимен', 'товар', 'название', 'номенклатура', 'описание', 'продукт', 'материал', 'name', 'product', 'description', 'item'],
+        'Количество': ['количество', 'колво', 'кол', 'к-во', 'количество', 'qty', 'quantity', 'count', 'number'],
+        'Цена': ['цена', 'цен', 'стоимость', 'price', 'cost', 'value'],
+        'Сумма': ['сумма', 'итого', 'всего', 'total', 'amount', 'sum'],
+        'Ед. изм.': ['единица', 'ед', 'ед.изм', 'измерение', 'unit', 'uom', 'measure']
+    }
+    
     col_map = {}
-    for col in df.columns:
-        if 'наимен' in col or 'товар' in col or 'назван' in col or 'описан' in col:
-            col_map['Наименование'] = col
-        elif 'количеств' in col or 'кол-во' in col or 'кол' in col:
-            col_map['Количество'] = col
-        elif 'цена' in col and 'за' in col:
-            col_map['Цена'] = col
-        elif 'сумма' in col:
-            col_map['Сумма'] = col
-        elif 'ед' in col or 'изм' in col:
-            col_map['Ед. изм.'] = col
-        elif '№' in col or 'п/п' in col or 'номер' in col:
-            col_map['№'] = col
-
+    # Поиск по синонимам
+    for target, variants in synonyms.items():
+        for col in df.columns:
+            if any(variant in col for variant in variants):
+                col_map[target] = col
+                break
+    
+    # Если какая-то колонка не найдена, пробуем анализировать содержимое
     required = ['Наименование', 'Количество', 'Цена', 'Сумма']
     missing = [r for r in required if r not in col_map]
+    
     if missing:
+        # Пробуем найти по типу данных
+        for col in df.columns:
+            if col in col_map.values():
+                continue
+            # Проверяем, содержит ли колонка текстовые значения (для наименования)
+            if col not in col_map and 'Наименование' in missing:
+                if df[col].dtype == 'object' and df[col].astype(str).str.len().mean() > 5:
+                    col_map['Наименование'] = col
+                    missing.remove('Наименование')
+                    continue
+            # Проверяем, содержит ли колонка числа (для количества, цены, суммы)
+            if col not in col_map:
+                try:
+                    numeric = pd.to_numeric(df[col], errors='coerce')
+                    if numeric.notna().sum() > 0:
+                        # Если колонка имеет много уникальных значений - это цена или сумма
+                        if numeric.nunique() > 10:
+                            if 'Цена' in missing:
+                                col_map['Цена'] = col
+                                missing.remove('Цена')
+                            elif 'Сумма' in missing:
+                                col_map['Сумма'] = col
+                                missing.remove('Сумма')
+                        else:
+                            if 'Количество' in missing:
+                                col_map['Количество'] = col
+                                missing.remove('Количество')
+                except:
+                    pass
+    
+    # Если всё ещё есть пропуски, пробуем найти по позиции (первая текстовая, первая числовая и т.д.)
+    if missing:
+        # Получаем список колонок по типам
+        text_cols = [col for col in df.columns if df[col].dtype == 'object']
+        num_cols = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col]) or pd.to_numeric(df[col], errors='coerce').notna().any()]
+        
+        if 'Наименование' in missing and text_cols:
+            col_map['Наименование'] = text_cols[0]
+            missing.remove('Наименование')
+        if 'Количество' in missing and num_cols:
+            col_map['Количество'] = num_cols[0] if len(num_cols) > 0 else None
+            missing.remove('Количество')
+        if 'Цена' in missing and len(num_cols) > 1:
+            col_map['Цена'] = num_cols[1]
+            missing.remove('Цена')
+        elif 'Цена' in missing and num_cols:
+            col_map['Цена'] = num_cols[-1]
+            missing.remove('Цена')
+        if 'Сумма' in missing and len(num_cols) > 2:
+            col_map['Сумма'] = num_cols[2]
+            missing.remove('Сумма')
+        elif 'Сумма' in missing and num_cols:
+            col_map['Сумма'] = num_cols[-1]
+            missing.remove('Сумма')
+    
+    # Если после всех попыток всё равно есть пропуски, возвращаем None
+    if missing:
+        st.error(f"❌ Не удалось автоматически определить колонки: {', '.join(missing)}. "
+                 f"Пожалуйста, переименуйте колонки в файле: "
+                 f"Наименование, Количество, Цена, Сумма (и, опционально, Ед. изм.).")
         return None
-
-    rename_dict = {v: k for k, v in col_map.items() if k in required}
+    
+    # Переименовываем
+    rename_dict = {v: k for k, v in col_map.items() if k in required + ['Ед. изм.']}
     df = df.rename(columns=rename_dict)
+    
+    # Оставляем только нужные колонки
+    keep_cols = ['Наименование', 'Количество', 'Цена', 'Сумма']
+    if 'Ед. изм.' in rename_dict.values():
+        keep_cols.append('Ед. изм.')
+    df = df[keep_cols]
+    
+    # Преобразуем числовые колонки
     for col in ['Количество', 'Цена', 'Сумма']:
         df[col] = df[col].astype(str).str.replace(',', '.').str.replace(' ', '')
         df[col] = pd.to_numeric(df[col], errors='coerce')
     df = df.dropna(subset=['Количество', 'Цена', 'Сумма'])
-    if 'Ед. изм.' in col_map and col_map['Ед. изм.']:
-        df['Ед. изм.'] = df[col_map['Ед. изм.']]
-    else:
+    
+    # Если нет Ед. изм., добавляем по умолчанию
+    if 'Ед. изм.' not in df.columns:
         df['Ед. изм.'] = 'шт'
+    
     return df
 
 def apply_manual_mapping(df, col_map):
-    rename_dict = {v: k for k, v in col_map.items() if k in ['Наименование', 'Количество', 'Цена', 'Сумма']}
-    df = df.rename(columns=rename_dict)
-    required = ['Наименование', 'Количество', 'Цена', 'Сумма']
-    df = df[required]
-    for col in ['Количество', 'Цена', 'Сумма']:
-        df[col] = df[col].astype(str).str.replace(',', '.').str.replace(' ', '')
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-    df = df.dropna(subset=['Количество', 'Цена', 'Сумма'])
-    if 'Ед. изм.' in col_map and col_map['Ед. изм.'] and col_map['Ед. изм.'] in df.columns:
-        df['Ед. изм.'] = df[col_map['Ед. изм.']]
-    else:
-        df['Ед. изм.'] = 'шт'
-    return df
+    # Эта функция больше не используется, так как мы полностью автоматизируем
+    # Оставляем для совместимости
+    pass
 
 def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_inn,
                  logo_bytes, signature_bytes, stamp_bytes, sign_position, sign_name,
@@ -216,13 +286,10 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
     elements = []
     styles = getSampleStyleSheet()
 
-    # Стили
-    title_style = ParagraphStyle('Title', parent=styles['Heading1'], alignment=TA_CENTER, fontSize=16, spaceAfter=6)
-    header_style = ParagraphStyle('Header', parent=styles['Normal'], fontSize=9, textColor=colors.grey)
-    company_style = ParagraphStyle('Company', parent=styles['Normal'], fontSize=10, leading=12)
-    cell_style = ParagraphStyle('Cell', parent=styles['Normal'], fontSize=8)
-    total_style = ParagraphStyle('Total', parent=styles['Normal'], fontSize=11, alignment=TA_RIGHT, spaceBefore=5)
-    total_bold_style = ParagraphStyle('TotalBold', parent=styles['Normal'], fontSize=11, alignment=TA_RIGHT, spaceBefore=5, fontName='Helvetica-Bold')
+    title_style = ParagraphStyle('Title', parent=styles['Heading1'], alignment=TA_CENTER, fontSize=16, spaceAfter=6, fontName='Times-Roman')
+    header_style = ParagraphStyle('Header', parent=styles['Normal'], fontSize=9, textColor=colors.grey, fontName='Times-Roman')
+    company_style = ParagraphStyle('Company', parent=styles['Normal'], fontSize=10, leading=12, fontName='Times-Roman')
+    cell_style = ParagraphStyle('Cell', parent=styles['Normal'], fontSize=8, fontName='Times-Roman')
 
     # Логотип
     logo_img = None
@@ -233,7 +300,7 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
         logo_img = RLImage(tmp_path, width=25*mm, height=20*mm, hAlign='RIGHT')
         os.unlink(tmp_path)
 
-    # Шапка: реквизиты поставщика
+    # Шапка поставщика
     supplier_text = f"<b>{supplier['name']}</b><br/>"
     if supplier['address']:
         supplier_text += f"{supplier['address']}<br/>"
@@ -308,11 +375,11 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
         ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
         ('ALIGN', (1,0), (1,-1), 'LEFT'),
-        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTNAME', (0,0), (-1,0), 'Times-Roman'),
         ('FONTSIZE', (0,0), (-1,0), 9),
         ('BOTTOMPADDING', (0,0), (-1,0), 6),
         ('BACKGROUND', (0,-3), (-1,-1), colors.HexColor('#f8f9fa')),
-        ('FONTNAME', (0,-3), (-1,-1), 'Helvetica-Bold'),
+        ('FONTNAME', (0,-3), (-1,-1), 'Times-Roman'),
         ('GRID', (0,0), (-1,-4), 0.5, colors.grey),
         ('BOX', (0,0), (-1,-1), 1, colors.black)
     ]))
@@ -395,32 +462,9 @@ if uploaded_file is not None:
                 st.session_state.normalized_df = df_norm
                 st.rerun()
             else:
-                st.warning("Не удалось автоматически определить колонки. Выберите соответствие вручную:")
-                cols = list(df_raw.columns)
-                col_name = st.selectbox("Выберите колонку для 'Наименование'", options=[''] + cols, key='manual_name')
-                col_qty = st.selectbox("Выберите колонку для 'Количество'", options=[''] + cols, key='manual_qty')
-                col_price = st.selectbox("Выберите колонку для 'Цена'", options=[''] + cols, key='manual_price')
-                col_sum = st.selectbox("Выберите колонку для 'Сумма'", options=[''] + cols, key='manual_sum')
-                col_unit = st.selectbox("Выберите колонку для 'Ед. изм.' (необязательно)", options=[''] + cols, key='manual_unit')
-
-                if st.button("Применить ручное сопоставление"):
-                    if not all([col_name, col_qty, col_price, col_sum]):
-                        st.error("❌ Выберите все обязательные колонки (Наименование, Количество, Цена, Сумма).")
-                    else:
-                        mapping = {
-                            'Наименование': col_name,
-                            'Количество': col_qty,
-                            'Цена': col_price,
-                            'Сумма': col_sum
-                        }
-                        if col_unit:
-                            mapping['Ед. изм.'] = col_unit
-                        df = apply_manual_mapping(df_raw, mapping)
-                        if df is not None:
-                            st.session_state.normalized_df = df
-                            st.rerun()
-                        else:
-                            st.error("Ошибка при применении маппинга. Проверьте данные.")
+                st.error("❌ Не удалось автоматически определить колонки. Убедитесь, что в файле есть колонки: "
+                         "Наименование, Количество, Цена, Сумма (можно с другими названиями, но они должны быть понятны).")
+                st.stop()
         else:
             df = st.session_state.normalized_df
             st.subheader("✏️ Редактирование данных")
@@ -449,6 +493,7 @@ if uploaded_file is not None:
             col1, col2, col3 = st.columns(3)
             col1.metric("Старая сумма", f"{old_total:,.2f} ₽")
             col2.metric("Новая сумма", f"{new_total:,.2f} ₽", delta=f"{new_total - old_total:,.2f} ₽")
+            col3.metric("Наценка", f"{new_total - old_total:,.2f} ₽")
 
             if not st.session_state.supplier['name']:
                 st.warning("⚠️ Заполните реквизиты поставщика в боковой панели.")
@@ -457,7 +502,7 @@ if uploaded_file is not None:
 
             col_btn1, col_btn2, col_btn3 = st.columns(3)
             with col_btn1:
-                if st.button("📥 Скачать КП", type="primary"):
+                if st.button("📥 Download KP", type="primary"):
                     st.session_state.kp_number = kp_number
                     st.session_state.kp_date = kp_date
                     try:
@@ -476,13 +521,13 @@ if uploaded_file is not None:
                         st.session_state.payment_terms
                     )
                     st.download_button(
-                        label="📥 Скачать PDF",
+                        label="📥 Download PDF",
                         data=pdf_buffer,
                         file_name=f"KP_{kp_number if kp_number else 'без_номера'}.pdf",
                         mime="application/pdf"
                     )
             with col_btn2:
-                if st.button("📧 Отправить на почту"):
+                if st.button("📧 Send by email"):
                     if not buyer_email:
                         st.warning("Укажите email покупателя.")
                     elif not st.session_state.supplier['name']:
@@ -490,11 +535,11 @@ if uploaded_file is not None:
                     else:
                         st.info(f"📧 Отправка на {buyer_email} ... (в реальном приложении добавьте SMTP)")
             with col_btn3:
-                if st.button("🔗 Получить ссылку"):
+                if st.button("🔗 Get link"):
                     st.info("🔗 Демо-ссылка: https://disk.yandex.ru/d/example (в реальном приложении загрузите на Яндекс Диск)")
 
     except Exception as e:
         st.error(f"Ошибка: {e}")
 else:
     st.session_state.normalized_df = None
-    st.info("Загрузите накладную (Excel или PDF), и приложение поможет вам сопоставить колонки.")
+    st.info("Загрузите накладную (Excel или PDF), и приложение автоматически определит колонки.")
