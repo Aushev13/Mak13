@@ -181,22 +181,25 @@ def normalize_columns_auto(df):
         df[col] = df[col].astype(str).str.replace(',', '.').str.replace(' ', '')
         df[col] = pd.to_numeric(df[col], errors='coerce')
     df = df.dropna(subset=['Количество', 'Цена', 'Сумма'])
-    if 'Ед. изм.' in col_map:
+    if 'Ед. изм.' in col_map and col_map['Ед. изм.']:
         df['Ед. изм.'] = df[col_map['Ед. изм.']]
     else:
         df['Ед. изм.'] = 'шт'
     return df
 
 def apply_manual_mapping(df, col_map):
+    # Переименовываем обязательные колонки
     rename_dict = {v: k for k, v in col_map.items() if k in ['Наименование', 'Количество', 'Цена', 'Сумма']}
     df = df.rename(columns=rename_dict)
     required = ['Наименование', 'Количество', 'Цена', 'Сумма']
     df = df[required]
+    # Преобразуем числовые колонки
     for col in ['Количество', 'Цена', 'Сумма']:
         df[col] = df[col].astype(str).str.replace(',', '.').str.replace(' ', '')
         df[col] = pd.to_numeric(df[col], errors='coerce')
     df = df.dropna(subset=['Количество', 'Цена', 'Сумма'])
-    if 'Ед. изм.' in col_map:
+    # Добавляем Ед. изм., если выбрана колонка и она существует
+    if 'Ед. изм.' in col_map and col_map['Ед. изм.'] and col_map['Ед. изм.'] in df.columns:
         df['Ед. изм.'] = df[col_map['Ед. изм.']]
     else:
         df['Ед. изм.'] = 'шт'
