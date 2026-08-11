@@ -7,6 +7,8 @@ import tempfile
 import os
 import json
 import base64
+import urllib.request
+import shutil
 from datetime import datetime
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
@@ -14,9 +16,44 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
-# Используем встроенный шрифт Times-Roman (поддерживает кириллицу)
-FONT_NAME = 'Times-Roman'
+# --- Функция для получения шрифта с поддержкой кириллицы ---
+def get_cyrillic_font():
+    """
+    Возвращает имя зарегистрированного шрифта для кириллицы.
+    Сначала проверяет системные пути, если нет — скачивает DejaVuSans из интернета.
+    """
+    font_paths = [
+        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+        '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+        '/System/Library/Fonts/Supplemental/Arial.ttf',  # macOS
+        'C:/Windows/Fonts/arial.ttf'  # Windows
+    ]
+    
+    for path in font_paths:
+        if os.path.exists(path):
+            try:
+                pdfmetrics.registerFont(TTFont('CyrillicFont', path))
+                return 'CyrillicFont'
+            except:
+                continue
+    
+    # Если ни один системный шрифт не найден, скачиваем DejaVuSans из интернета
+    try:
+        url = 'https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf'
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.ttf') as tmp:
+            urllib.request.urlretrieve(url, tmp.name)
+            pdfmetrics.registerFont(TTFont('CyrillicFont', tmp.name))
+            return 'CyrillicFont'
+    except:
+        # Если скачать не удалось, используем встроенный Times-Roman (но кириллица не будет работать)
+        st.warning("⚠️ Не удалось загрузить шрифт для кириллицы. Буквы могут отображаться квадратами.")
+        return 'Times-Roman'
+
+# Регистрируем шрифт один раз при старте
+FONT_NAME = get_cyrillic_font()
 
 st.set_page_config(page_title="Генератор КП", layout="wide")
 st.title("📄 Генератор коммерческого предложения")
@@ -266,6 +303,7 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
     elements = []
     styles = getSampleStyleSheet()
 
+    # Используем зарегистрированный шрифт с поддержкой кириллицы
     title_style = ParagraphStyle('Title', parent=styles['Heading1'], alignment=TA_CENTER, fontSize=16, spaceAfter=6, fontName=FONT_NAME)
     header_style = ParagraphStyle('Header', parent=styles['Normal'], fontSize=9, textColor=colors.grey, fontName=FONT_NAME)
     company_style = ParagraphStyle('Company', parent=styles['Normal'], fontSize=10, leading=12, fontName=FONT_NAME)
