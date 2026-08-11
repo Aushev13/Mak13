@@ -14,15 +14,9 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 
-# Регистрируем шрифт для кириллицы (DejaVuSans, если есть)
-try:
-    pdfmetrics.registerFont(TTFont('DejaVuSans', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'))
-    FONT_NAME = 'DejaVuSans'
-except:
-    FONT_NAME = 'Times-Roman'
+# Используем встроенный шрифт Times-Roman (поддерживает кириллицу)
+FONT_NAME = 'Times-Roman'
 
 st.set_page_config(page_title="Генератор КП", layout="wide")
 st.title("📄 Генератор коммерческого предложения")
