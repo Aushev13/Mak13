@@ -4,4 +4,3 @@ openpyxl
 pdfplumber
 numpy
 Pillow
-fpdf2
