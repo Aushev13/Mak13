@@ -5,3 +5,4 @@ reportlab
 pdfplumber
 numpy
 Pillow
+fpdf2
