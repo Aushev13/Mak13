@@ -11,41 +11,51 @@ import urllib.request
 from datetime import datetime
 from fpdf import FPDF
 
-# --- Функция загрузки шрифтов (обычный и жирный) ---
+# --- Функция загрузки шрифтов (сначала проверяет системные пути) ---
 def get_fonts():
     """
-    Скачивает DejaVuSans и DejaVuSans-Bold, если их нет.
-    Возвращает словарь с путями к шрифтам или None.
+    Возвращает словарь с путями к шрифтам (обычный и жирный).
+    Сначала проверяет системные пути Ubuntu, затем скачивает из интернета.
     """
+    # Системные пути для Ubuntu (Streamlit Cloud)
+    system_regular = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
+    system_bold = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
+    
+    if os.path.exists(system_regular) and os.path.exists(system_bold):
+        return {'regular': system_regular, 'bold': system_bold}
+    
+    # Если системных нет, скачиваем во временную папку
     font_dir = tempfile.gettempdir()
     fonts = {
         'regular': os.path.join(font_dir, 'DejaVuSans.ttf'),
         'bold': os.path.join(font_dir, 'DejaVuSans-Bold.ttf')
     }
     
-    # Проверяем системные пути (Ubuntu)
-    system_paths = {
-        'regular': '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-        'bold': '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
-    }
+    # Скачиваем обычный шрифт
+    if not os.path.exists(fonts['regular']):
+        try:
+            urllib.request.urlretrieve(
+                'https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf',
+                fonts['regular']
+            )
+        except:
+            fonts['regular'] = None
     
-    # Сначала проверяем системные
-    for style, path in system_paths.items():
-        if os.path.exists(path):
-            fonts[style] = path
-            continue
-        # Если нет, скачиваем
-        url = f"https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans{'Bold' if style == 'bold' else ''}.ttf"
-        if not os.path.exists(fonts[style]):
-            try:
-                urllib.request.urlretrieve(url, fonts[style])
-            except:
-                fonts[style] = None
+    # Скачиваем жирный шрифт
+    if not os.path.exists(fonts['bold']):
+        try:
+            urllib.request.urlretrieve(
+                'https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans-Bold.ttf',
+                fonts['bold']
+            )
+        except:
+            fonts['bold'] = None
     
-    # Если хотя бы один шрифт не удалось получить, возвращаем None
-    if not fonts['regular'] or not fonts['bold']:
+    # Если оба есть - возвращаем, иначе None
+    if fonts['regular'] and fonts['bold']:
+        return fonts
+    else:
         return None
-    return fonts
 
 st.set_page_config(page_title="Генератор КП", layout="wide")
 st.title("📄 Генератор коммерческого предложения")
@@ -285,12 +295,13 @@ def normalize_columns_auto(df):
     
     return df
 
-# ---------- Генерация PDF с помощью fpdf2 с поддержкой кириллицы ----------
+# ---------- Генерация PDF с помощью fpdf2 ----------
 def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_inn,
                  logo_bytes, signature_bytes, stamp_bytes, sign_position, sign_name,
                  kp_number, kp_date, payment_terms):
-    # Получаем шрифты
+    # Загружаем шрифты
     fonts = get_fonts()
+    
     pdf = FPDF('L', 'mm', 'A4')
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
