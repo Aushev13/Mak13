@@ -14,6 +14,15 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+# Регистрируем шрифт для кириллицы (DejaVuSans, если есть)
+try:
+    pdfmetrics.registerFont(TTFont('DejaVuSans', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'))
+    FONT_NAME = 'DejaVuSans'
+except:
+    FONT_NAME = 'Times-Roman'
 
 st.set_page_config(page_title="Генератор КП", layout="wide")
 st.title("📄 Генератор коммерческого предложения")
@@ -158,14 +167,9 @@ def extract_table_from_pdf(pdf_file):
         return pd.DataFrame(data, columns=headers)
 
 def normalize_columns_auto(df):
-    """
-    Автоматически определяет колонки: Наименование, Количество, Цена, Сумма, Ед. изм.
-    Использует расширенный поиск по синонимам и анализ данных.
-    """
     # Приводим названия колонок к нижнему регистру и чистим
     df.columns = [str(col).lower().strip().replace(' ', '').replace('_', '').replace('.', '').replace('№', 'n') for col in df.columns]
     
-    # Синонимы для каждой целевой колонки
     synonyms = {
         'Наименование': ['наименование', 'наимен', 'товар', 'название', 'номенклатура', 'описание', 'продукт', 'материал', 'name', 'product', 'description', 'item'],
         'Количество': ['количество', 'колво', 'кол', 'к-во', 'количество', 'qty', 'quantity', 'count', 'number'],
@@ -175,14 +179,12 @@ def normalize_columns_auto(df):
     }
     
     col_map = {}
-    # Поиск по синонимам
     for target, variants in synonyms.items():
         for col in df.columns:
             if any(variant in col for variant in variants):
                 col_map[target] = col
                 break
     
-    # Если какая-то колонка не найдена, пробуем анализировать содержимое
     required = ['Наименование', 'Количество', 'Цена', 'Сумма']
     missing = [r for r in required if r not in col_map]
     
@@ -191,18 +193,15 @@ def normalize_columns_auto(df):
         for col in df.columns:
             if col in col_map.values():
                 continue
-            # Проверяем, содержит ли колонка текстовые значения (для наименования)
             if col not in col_map and 'Наименование' in missing:
                 if df[col].dtype == 'object' and df[col].astype(str).str.len().mean() > 5:
                     col_map['Наименование'] = col
                     missing.remove('Наименование')
                     continue
-            # Проверяем, содержит ли колонка числа (для количества, цены, суммы)
             if col not in col_map:
                 try:
                     numeric = pd.to_numeric(df[col], errors='coerce')
                     if numeric.notna().sum() > 0:
-                        # Если колонка имеет много уникальных значений - это цена или сумма
                         if numeric.nunique() > 10:
                             if 'Цена' in missing:
                                 col_map['Цена'] = col
@@ -217,9 +216,7 @@ def normalize_columns_auto(df):
                 except:
                     pass
     
-    # Если всё ещё есть пропуски, пробуем найти по позиции (первая текстовая, первая числовая и т.д.)
     if missing:
-        # Получаем список колонок по типам
         text_cols = [col for col in df.columns if df[col].dtype == 'object']
         num_cols = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col]) or pd.to_numeric(df[col], errors='coerce').notna().any()]
         
@@ -242,39 +239,28 @@ def normalize_columns_auto(df):
             col_map['Сумма'] = num_cols[-1]
             missing.remove('Сумма')
     
-    # Если после всех попыток всё равно есть пропуски, возвращаем None
     if missing:
         st.error(f"❌ Не удалось автоматически определить колонки: {', '.join(missing)}. "
                  f"Пожалуйста, переименуйте колонки в файле: "
                  f"Наименование, Количество, Цена, Сумма (и, опционально, Ед. изм.).")
         return None
     
-    # Переименовываем
     rename_dict = {v: k for k, v in col_map.items() if k in required + ['Ед. изм.']}
     df = df.rename(columns=rename_dict)
-    
-    # Оставляем только нужные колонки
     keep_cols = ['Наименование', 'Количество', 'Цена', 'Сумма']
     if 'Ед. изм.' in rename_dict.values():
         keep_cols.append('Ед. изм.')
     df = df[keep_cols]
     
-    # Преобразуем числовые колонки
     for col in ['Количество', 'Цена', 'Сумма']:
         df[col] = df[col].astype(str).str.replace(',', '.').str.replace(' ', '')
         df[col] = pd.to_numeric(df[col], errors='coerce')
     df = df.dropna(subset=['Количество', 'Цена', 'Сумма'])
     
-    # Если нет Ед. изм., добавляем по умолчанию
     if 'Ед. изм.' not in df.columns:
         df['Ед. изм.'] = 'шт'
     
     return df
-
-def apply_manual_mapping(df, col_map):
-    # Эта функция больше не используется, так как мы полностью автоматизируем
-    # Оставляем для совместимости
-    pass
 
 def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_inn,
                  logo_bytes, signature_bytes, stamp_bytes, sign_position, sign_name,
@@ -286,12 +272,11 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
     elements = []
     styles = getSampleStyleSheet()
 
-    title_style = ParagraphStyle('Title', parent=styles['Heading1'], alignment=TA_CENTER, fontSize=16, spaceAfter=6, fontName='Times-Roman')
-    header_style = ParagraphStyle('Header', parent=styles['Normal'], fontSize=9, textColor=colors.grey, fontName='Times-Roman')
-    company_style = ParagraphStyle('Company', parent=styles['Normal'], fontSize=10, leading=12, fontName='Times-Roman')
-    cell_style = ParagraphStyle('Cell', parent=styles['Normal'], fontSize=8, fontName='Times-Roman')
+    title_style = ParagraphStyle('Title', parent=styles['Heading1'], alignment=TA_CENTER, fontSize=16, spaceAfter=6, fontName=FONT_NAME)
+    header_style = ParagraphStyle('Header', parent=styles['Normal'], fontSize=9, textColor=colors.grey, fontName=FONT_NAME)
+    company_style = ParagraphStyle('Company', parent=styles['Normal'], fontSize=10, leading=12, fontName=FONT_NAME)
+    cell_style = ParagraphStyle('Cell', parent=styles['Normal'], fontSize=8, fontName=FONT_NAME)
 
-    # Логотип
     logo_img = None
     if logo_bytes:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
@@ -300,7 +285,6 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
         logo_img = RLImage(tmp_path, width=25*mm, height=20*mm, hAlign='RIGHT')
         os.unlink(tmp_path)
 
-    # Шапка поставщика
     supplier_text = f"<b>{supplier['name']}</b><br/>"
     if supplier['address']:
         supplier_text += f"{supplier['address']}<br/>"
@@ -316,11 +300,14 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
 
     header_data = [[left_part, logo_img if logo_img else '']]
     header_table = Table(header_data, colWidths=[130*mm, 40*mm])
-    header_table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('ALIGN', (1,0), (1,0), 'RIGHT')]))
+    header_table.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ('ALIGN', (1,0), (1,0), 'RIGHT'),
+        ('FONTNAME', (0,0), (-1,-1), FONT_NAME)
+    ]))
     elements.append(header_table)
     elements.append(Spacer(1, 3*mm))
 
-    # Покупатель
     buyer_text = f"<b>Покупатель:</b> {buyer_name}" if buyer_name else ""
     if buyer_inn:
         buyer_text += f", ИНН {buyer_inn}"
@@ -328,7 +315,6 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
         elements.append(Paragraph(buyer_text, company_style))
         elements.append(Spacer(1, 2*mm))
 
-    # Заголовок
     title_text = "КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ"
     if kp_number:
         title_text += f" № {kp_number}"
@@ -337,7 +323,6 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
         elements.append(Paragraph(f"от {kp_date}", header_style))
     elements.append(Spacer(1, 5*mm))
 
-    # Таблица
     data = []
     headers = ['№', 'Наименование', 'Ед. изм.', 'Количество', 'Цена', 'Сумма']
     data.append([Paragraph(h, cell_style) for h in headers])
@@ -355,7 +340,6 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
         ]
         data.append(row_data)
 
-    # Итоги
     data.append([
         Paragraph('<b>Итого:</b>', cell_style), '', '', '',
         '', Paragraph(f"<b>{new_total:,.2f}</b>".replace(',', ' '), cell_style)
@@ -375,29 +359,26 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
         ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
         ('ALIGN', (1,0), (1,-1), 'LEFT'),
-        ('FONTNAME', (0,0), (-1,0), 'Times-Roman'),
+        ('FONTNAME', (0,0), (-1,-1), FONT_NAME),
         ('FONTSIZE', (0,0), (-1,0), 9),
         ('BOTTOMPADDING', (0,0), (-1,0), 6),
         ('BACKGROUND', (0,-3), (-1,-1), colors.HexColor('#f8f9fa')),
-        ('FONTNAME', (0,-3), (-1,-1), 'Times-Roman'),
+        ('FONTNAME', (0,-3), (-1,-1), FONT_NAME),
         ('GRID', (0,0), (-1,-4), 0.5, colors.grey),
         ('BOX', (0,0), (-1,-1), 1, colors.black)
     ]))
     elements.append(table)
     elements.append(Spacer(1, 3*mm))
 
-    # Пропись суммы
     total_words = f"Всего наименований {len(df)}, на сумму {int(new_total)} рублей 00 копеек"
     elements.append(Paragraph(total_words, header_style))
     elements.append(Spacer(1, 5*mm))
 
-    # Условия оплаты
     if payment_terms:
         elements.append(Paragraph(f"<b>Условия оплаты и доставки:</b>", header_style))
         elements.append(Paragraph(payment_terms.replace('\n', '<br/>'), header_style))
         elements.append(Spacer(1, 3*mm))
 
-    # Подпись
     elements.append(Spacer(1, 8*mm))
     sig_img = None
     if signature_bytes:
@@ -412,7 +393,11 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
         left_sig.append(sig_img)
     if left_sig:
         sig_table = Table([[left_sig[0]]])
-        sig_table.setStyle(TableStyle([('ALIGN',(0,0),(-1,-1),'CENTER'), ('VALIGN',(0,0),(-1,-1),'MIDDLE')]))
+        sig_table.setStyle(TableStyle([
+            ('ALIGN',(0,0),(-1,-1),'CENTER'),
+            ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
+            ('FONTNAME', (0,0), (-1,-1), FONT_NAME)
+        ]))
         left_part = sig_table
     else:
         left_part = Paragraph("(подпись)", header_style)
@@ -425,7 +410,8 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
     sig_table.setStyle(TableStyle([
         ('VALIGN',(0,0),(-1,-1),'BOTTOM'),
         ('ALIGN',(0,0),(0,0),'CENTER'),
-        ('ALIGN',(1,0),(1,0),'RIGHT')
+        ('ALIGN',(1,0),(1,0),'RIGHT'),
+        ('FONTNAME', (0,0), (-1,-1), FONT_NAME)
     ]))
     elements.append(sig_table)
 
