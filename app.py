@@ -8,52 +8,22 @@ import os
 import json
 import base64
 import urllib.request
-import shutil
 from datetime import datetime
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import mm
-from reportlab.lib.enums import TA_CENTER, TA_RIGHT
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+from fpdf import FPDF
 
-# --- Функция для получения шрифта с поддержкой кириллицы ---
-def get_cyrillic_font():
-    """
-    Возвращает имя зарегистрированного шрифта для кириллицы.
-    Сначала проверяет системные пути, если нет — скачивает DejaVuSans из интернета.
-    """
-    font_paths = [
-        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-        '/System/Library/Fonts/Supplemental/Arial.ttf',  # macOS
-        'C:/Windows/Fonts/arial.ttf'  # Windows
-    ]
-    
-    for path in font_paths:
-        if os.path.exists(path):
-            try:
-                pdfmetrics.registerFont(TTFont('CyrillicFont', path))
-                return 'CyrillicFont'
-            except:
-                continue
-    
-    # Если ни один системный шрифт не найден, скачиваем DejaVuSans из интернета
-    try:
-        url = 'https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf'
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.ttf') as tmp:
-            urllib.request.urlretrieve(url, tmp.name)
-            pdfmetrics.registerFont(TTFont('CyrillicFont', tmp.name))
-            return 'CyrillicFont'
-    except:
-        # Если скачать не удалось, используем встроенный Times-Roman (но кириллица не будет работать)
-        st.warning("⚠️ Не удалось загрузить шрифт для кириллицы. Буквы могут отображаться квадратами.")
-        return 'Times-Roman'
-
-# Регистрируем шрифт один раз при старте
-FONT_NAME = get_cyrillic_font()
+# --- Функция получения шрифта для fpdf ---
+def get_font_path():
+    """Скачивает шрифт DejaVuSans, если его нет, и возвращает путь к нему."""
+    font_dir = tempfile.gettempdir()
+    font_path = os.path.join(font_dir, 'DejaVuSans.ttf')
+    if not os.path.exists(font_path):
+        try:
+            url = 'https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf'
+            urllib.request.urlretrieve(url, font_path)
+        except:
+            st.warning("⚠️ Не удалось скачать шрифт. Буквы могут не отображаться.")
+            return None
+    return font_path
 
 st.set_page_config(page_title="Генератор КП", layout="wide")
 st.title("📄 Генератор коммерческого предложения")
@@ -293,163 +263,157 @@ def normalize_columns_auto(df):
     
     return df
 
+# ---------- Генерация PDF с помощью fpdf2 ----------
 def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_inn,
                  logo_bytes, signature_bytes, stamp_bytes, sign_position, sign_name,
                  kp_number, kp_date, payment_terms):
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4),
-                            leftMargin=15*mm, rightMargin=15*mm,
-                            topMargin=20*mm, bottomMargin=15*mm)
-    elements = []
-    styles = getSampleStyleSheet()
+    # Создаём PDF
+    pdf = FPDF('L', 'mm', 'A4')
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    
+    # Скачиваем и подключаем шрифт с поддержкой кириллицы
+    font_path = get_font_path()
+    if font_path:
+        pdf.add_font('DejaVu', '', font_path, uni=True)
+        pdf.set_font('DejaVu', '', 10)
+    else:
+        pdf.set_font('Helvetica', '', 10)  # fallback
 
-    # Используем зарегистрированный шрифт с поддержкой кириллицы
-    title_style = ParagraphStyle('Title', parent=styles['Heading1'], alignment=TA_CENTER, fontSize=16, spaceAfter=6, fontName=FONT_NAME)
-    header_style = ParagraphStyle('Header', parent=styles['Normal'], fontSize=9, textColor=colors.grey, fontName=FONT_NAME)
-    company_style = ParagraphStyle('Company', parent=styles['Normal'], fontSize=10, leading=12, fontName=FONT_NAME)
-    cell_style = ParagraphStyle('Cell', parent=styles['Normal'], fontSize=8, fontName=FONT_NAME)
-
-    logo_img = None
+    # --- Шапка ---
+    # Логотип (если есть)
     if logo_bytes:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
             tmp.write(logo_bytes)
             tmp_path = tmp.name
-        logo_img = RLImage(tmp_path, width=25*mm, height=20*mm, hAlign='RIGHT')
+        pdf.image(tmp_path, x=170, y=10, w=30)
         os.unlink(tmp_path)
 
-    supplier_text = f"<b>{supplier['name']}</b><br/>"
+    # Реквизиты поставщика
+    pdf.set_font('DejaVu', 'B', 12)
+    pdf.set_xy(10, 10)
+    pdf.cell(0, 6, supplier['name'], ln=True)
+    pdf.set_font('DejaVu', '', 10)
     if supplier['address']:
-        supplier_text += f"{supplier['address']}<br/>"
+        pdf.cell(0, 5, supplier['address'], ln=True)
     if supplier['inn']:
-        supplier_text += f"ИНН {supplier['inn']}"
+        pdf.cell(0, 5, f"ИНН {supplier['inn']}", ln=True)
     if supplier['kpp']:
-        supplier_text += f" / КПП {supplier['kpp']}"
+        pdf.cell(0, 5, f"КПП {supplier['kpp']}", ln=True)
     if supplier['phone']:
-        supplier_text += f" / {supplier['phone']}"
+        pdf.cell(0, 5, f"тел. {supplier['phone']}", ln=True)
     if supplier['bank']:
-        supplier_text += f"<br/>{supplier['bank']}"
-    left_part = Paragraph(supplier_text, company_style)
+        pdf.cell(0, 5, supplier['bank'], ln=True)
 
-    header_data = [[left_part, logo_img if logo_img else '']]
-    header_table = Table(header_data, colWidths=[130*mm, 40*mm])
-    header_table.setStyle(TableStyle([
-        ('VALIGN', (0,0), (-1,-1), 'TOP'),
-        ('ALIGN', (1,0), (1,0), 'RIGHT'),
-        ('FONTNAME', (0,0), (-1,-1), FONT_NAME)
-    ]))
-    elements.append(header_table)
-    elements.append(Spacer(1, 3*mm))
+    # Покупатель
+    pdf.ln(3)
+    if buyer_name:
+        pdf.set_font('DejaVu', 'B', 10)
+        pdf.cell(0, 5, f"Покупатель: {buyer_name}", ln=True)
+        if buyer_inn:
+            pdf.set_font('DejaVu', '', 10)
+            pdf.cell(0, 5, f"ИНН {buyer_inn}", ln=True)
 
-    buyer_text = f"<b>Покупатель:</b> {buyer_name}" if buyer_name else ""
-    if buyer_inn:
-        buyer_text += f", ИНН {buyer_inn}"
-    if buyer_text:
-        elements.append(Paragraph(buyer_text, company_style))
-        elements.append(Spacer(1, 2*mm))
-
+    # Заголовок КП
+    pdf.ln(4)
+    pdf.set_font('DejaVu', 'B', 16)
     title_text = "КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ"
     if kp_number:
         title_text += f" № {kp_number}"
-    elements.append(Paragraph(title_text, title_style))
+    pdf.cell(0, 8, title_text, ln=True, align='C')
     if kp_date:
-        elements.append(Paragraph(f"от {kp_date}", header_style))
-    elements.append(Spacer(1, 5*mm))
+        pdf.set_font('DejaVu', '', 10)
+        pdf.cell(0, 5, f"от {kp_date}", ln=True, align='C')
+    pdf.ln(4)
 
-    data = []
+    # --- Таблица ---
+    # Заголовки таблицы
     headers = ['№', 'Наименование', 'Ед. изм.', 'Количество', 'Цена', 'Сумма']
-    data.append([Paragraph(h, cell_style) for h in headers])
+    col_widths = [10, 70, 15, 20, 30, 30]
+    total_width = sum(col_widths)
 
+    # Рисуем таблицу
+    pdf.set_font('DejaVu', 'B', 9)
+    # Заголовок
+    for i, header in enumerate(headers):
+        pdf.cell(col_widths[i], 7, header, border=1, align='C')
+    pdf.ln()
+
+    # Данные
+    pdf.set_font('DejaVu', '', 9)
     for idx, row in df.iterrows():
         new_price = row['Цена'] * (1 + markup/100)
         new_sum = row['Сумма'] * (1 + markup/100)
-        row_data = [
-            Paragraph(str(row.get('№', idx+1)), cell_style),
-            Paragraph(str(row['Наименование']), cell_style),
-            Paragraph(str(row.get('Ед. изм.', 'шт')), cell_style),
-            Paragraph(str(int(row['Количество'])) if row['Количество']==int(row['Количество']) else str(row['Количество']), cell_style),
-            Paragraph(f"{new_price:,.2f}".replace(',', ' '), cell_style),
-            Paragraph(f"{new_sum:,.2f}".replace(',', ' '), cell_style)
+        data_row = [
+            str(row.get('№', idx+1)),
+            str(row['Наименование']),
+            str(row.get('Ед. изм.', 'шт')),
+            str(int(row['Количество'])) if row['Количество']==int(row['Количество']) else str(row['Количество']),
+            f"{new_price:,.2f}".replace(',', ' '),
+            f"{new_sum:,.2f}".replace(',', ' ')
         ]
-        data.append(row_data)
+        for i, cell in enumerate(data_row):
+            pdf.cell(col_widths[i], 6, cell, border=1, align='C')
+        pdf.ln()
 
-    data.append([
-        Paragraph('<b>Итого:</b>', cell_style), '', '', '',
-        '', Paragraph(f"<b>{new_total:,.2f}</b>".replace(',', ' '), cell_style)
-    ])
-    data.append([
-        Paragraph('Без налога (НДС):', cell_style), '', '', '',
-        '', Paragraph('—', cell_style)
-    ])
-    data.append([
-        Paragraph('<b>Всего:</b>', cell_style), '', '', '',
-        '', Paragraph(f"<b>{new_total:,.2f}</b>".replace(',', ' '), cell_style)
-    ])
+    # Итоги
+    pdf.set_font('DejaVu', 'B', 9)
+    pdf.cell(col_widths[0], 7, '', border=1)
+    pdf.cell(col_widths[1], 7, '', border=1)
+    pdf.cell(col_widths[2], 7, '', border=1)
+    pdf.cell(col_widths[3], 7, '', border=1)
+    pdf.cell(col_widths[4], 7, 'Итого:', border=1, align='R')
+    pdf.cell(col_widths[5], 7, f"{new_total:,.2f}".replace(',', ' '), border=1, align='R')
+    pdf.ln()
 
-    table = Table(data, colWidths=[10*mm, 70*mm, 15*mm, 20*mm, 30*mm, 30*mm], repeatRows=1)
-    table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2c3e50')),
-        ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('ALIGN', (1,0), (1,-1), 'LEFT'),
-        ('FONTNAME', (0,0), (-1,-1), FONT_NAME),
-        ('FONTSIZE', (0,0), (-1,0), 9),
-        ('BOTTOMPADDING', (0,0), (-1,0), 6),
-        ('BACKGROUND', (0,-3), (-1,-1), colors.HexColor('#f8f9fa')),
-        ('FONTNAME', (0,-3), (-1,-1), FONT_NAME),
-        ('GRID', (0,0), (-1,-4), 0.5, colors.grey),
-        ('BOX', (0,0), (-1,-1), 1, colors.black)
-    ]))
-    elements.append(table)
-    elements.append(Spacer(1, 3*mm))
+    pdf.cell(col_widths[0], 7, '', border=1)
+    pdf.cell(col_widths[1], 7, '', border=1)
+    pdf.cell(col_widths[2], 7, '', border=1)
+    pdf.cell(col_widths[3], 7, '', border=1)
+    pdf.cell(col_widths[4], 7, 'Без налога (НДС):', border=1, align='R')
+    pdf.cell(col_widths[5], 7, '—', border=1, align='R')
+    pdf.ln()
 
+    pdf.cell(col_widths[0], 7, '', border=1)
+    pdf.cell(col_widths[1], 7, '', border=1)
+    pdf.cell(col_widths[2], 7, '', border=1)
+    pdf.cell(col_widths[3], 7, '', border=1)
+    pdf.cell(col_widths[4], 7, 'Всего:', border=1, align='R')
+    pdf.cell(col_widths[5], 7, f"{new_total:,.2f}".replace(',', ' '), border=1, align='R')
+    pdf.ln()
+
+    # Пропись суммы
+    pdf.ln(3)
+    pdf.set_font('DejaVu', '', 10)
     total_words = f"Всего наименований {len(df)}, на сумму {int(new_total)} рублей 00 копеек"
-    elements.append(Paragraph(total_words, header_style))
-    elements.append(Spacer(1, 5*mm))
+    pdf.cell(0, 6, total_words, ln=True)
 
+    # Условия оплаты
     if payment_terms:
-        elements.append(Paragraph(f"<b>Условия оплаты и доставки:</b>", header_style))
-        elements.append(Paragraph(payment_terms.replace('\n', '<br/>'), header_style))
-        elements.append(Spacer(1, 3*mm))
+        pdf.ln(2)
+        pdf.set_font('DejaVu', 'B', 10)
+        pdf.cell(0, 6, "Условия оплаты и доставки:", ln=True)
+        pdf.set_font('DejaVu', '', 10)
+        pdf.multi_cell(0, 5, payment_terms)
 
-    elements.append(Spacer(1, 8*mm))
-    sig_img = None
+    # Подпись
+    pdf.ln(6)
+    # Сдвигаем вправо для подписи
+    pdf.set_font('DejaVu', '', 10)
     if signature_bytes:
+        # Вставляем изображение подписи
         with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
             tmp.write(signature_bytes)
             tmp_path = tmp.name
-        sig_img = RLImage(tmp_path, width=30*mm, height=15*mm)
+        pdf.image(tmp_path, x=120, y=pdf.get_y(), w=30)
         os.unlink(tmp_path)
+        pdf.ln(8)
+    pdf.cell(0, 6, sign_position, ln=True, align='R')
+    pdf.cell(0, 6, sign_name, ln=True, align='R')
 
-    left_sig = []
-    if sig_img:
-        left_sig.append(sig_img)
-    if left_sig:
-        sig_table = Table([[left_sig[0]]])
-        sig_table.setStyle(TableStyle([
-            ('ALIGN',(0,0),(-1,-1),'CENTER'),
-            ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
-            ('FONTNAME', (0,0), (-1,-1), FONT_NAME)
-        ]))
-        left_part = sig_table
-    else:
-        left_part = Paragraph("(подпись)", header_style)
-
-    right_text = f"<b>{sign_position}</b><br/>{sign_name}"
-    right_part = Paragraph(right_text, company_style)
-
-    sig_data = [[left_part, right_part]]
-    sig_table = Table(sig_data, colWidths=[80*mm, 50*mm])
-    sig_table.setStyle(TableStyle([
-        ('VALIGN',(0,0),(-1,-1),'BOTTOM'),
-        ('ALIGN',(0,0),(0,0),'CENTER'),
-        ('ALIGN',(1,0),(1,0),'RIGHT'),
-        ('FONTNAME', (0,0), (-1,-1), FONT_NAME)
-    ]))
-    elements.append(sig_table)
-
-    doc.build(elements)
-    buffer.seek(0)
-    return buffer
+    # Получение бинарных данных PDF
+    pdf_output = pdf.output(dest='S').encode('latin1')
+    return io.BytesIO(pdf_output)
 
 # ---------- Основной процесс ----------
 if uploaded_file is not None:
