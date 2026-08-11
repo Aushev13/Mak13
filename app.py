@@ -11,19 +11,41 @@ import urllib.request
 from datetime import datetime
 from fpdf import FPDF
 
-# --- Функция получения шрифта для fpdf ---
-def get_font_path():
-    """Скачивает шрифт DejaVuSans, если его нет, и возвращает путь к нему."""
+# --- Функция загрузки шрифтов (обычный и жирный) ---
+def get_fonts():
+    """
+    Скачивает DejaVuSans и DejaVuSans-Bold, если их нет.
+    Возвращает словарь с путями к шрифтам или None.
+    """
     font_dir = tempfile.gettempdir()
-    font_path = os.path.join(font_dir, 'DejaVuSans.ttf')
-    if not os.path.exists(font_path):
-        try:
-            url = 'https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf'
-            urllib.request.urlretrieve(url, font_path)
-        except:
-            st.warning("⚠️ Не удалось скачать шрифт. Буквы могут не отображаться.")
-            return None
-    return font_path
+    fonts = {
+        'regular': os.path.join(font_dir, 'DejaVuSans.ttf'),
+        'bold': os.path.join(font_dir, 'DejaVuSans-Bold.ttf')
+    }
+    
+    # Проверяем системные пути (Ubuntu)
+    system_paths = {
+        'regular': '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+        'bold': '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
+    }
+    
+    # Сначала проверяем системные
+    for style, path in system_paths.items():
+        if os.path.exists(path):
+            fonts[style] = path
+            continue
+        # Если нет, скачиваем
+        url = f"https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans{'Bold' if style == 'bold' else ''}.ttf"
+        if not os.path.exists(fonts[style]):
+            try:
+                urllib.request.urlretrieve(url, fonts[style])
+            except:
+                fonts[style] = None
+    
+    # Если хотя бы один шрифт не удалось получить, возвращаем None
+    if not fonts['regular'] or not fonts['bold']:
+        return None
+    return fonts
 
 st.set_page_config(page_title="Генератор КП", layout="wide")
 st.title("📄 Генератор коммерческого предложения")
@@ -263,37 +285,42 @@ def normalize_columns_auto(df):
     
     return df
 
-# ---------- Генерация PDF с помощью fpdf2 ----------
+# ---------- Генерация PDF с помощью fpdf2 с поддержкой кириллицы ----------
 def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_inn,
                  logo_bytes, signature_bytes, stamp_bytes, sign_position, sign_name,
                  kp_number, kp_date, payment_terms):
-    # Создаём PDF
+    # Получаем шрифты
+    fonts = get_fonts()
     pdf = FPDF('L', 'mm', 'A4')
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # Скачиваем и подключаем шрифт с поддержкой кириллицы
-    font_path = get_font_path()
-    if font_path:
-        pdf.add_font('DejaVu', '', font_path, uni=True)
-        pdf.set_font('DejaVu', '', 10)
+    if fonts:
+        # Регистрируем обычный и жирный шрифты
+        pdf.add_font('DejaVu', '', fonts['regular'], uni=True)
+        pdf.add_font('DejaVu', 'B', fonts['bold'], uni=True)
+        regular_font = 'DejaVu'
+        bold_font = 'DejaVu'
     else:
-        pdf.set_font('Helvetica', '', 10)  # fallback
-
+        # Если шрифты не загружены, используем стандартный (кириллица не поддерживается)
+        st.warning("⚠️ Шрифт для кириллицы не загружен. Буквы могут отображаться квадратами.")
+        regular_font = 'Helvetica'
+        bold_font = 'Helvetica'
+    
     # --- Шапка ---
-    # Логотип (если есть)
+    # Логотип
     if logo_bytes:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
             tmp.write(logo_bytes)
             tmp_path = tmp.name
         pdf.image(tmp_path, x=170, y=10, w=30)
         os.unlink(tmp_path)
-
+    
     # Реквизиты поставщика
-    pdf.set_font('DejaVu', 'B', 12)
+    pdf.set_font(bold_font, 'B', 12)
     pdf.set_xy(10, 10)
     pdf.cell(0, 6, supplier['name'], ln=True)
-    pdf.set_font('DejaVu', '', 10)
+    pdf.set_font(regular_font, '', 10)
     if supplier['address']:
         pdf.cell(0, 5, supplier['address'], ln=True)
     if supplier['inn']:
@@ -304,43 +331,40 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
         pdf.cell(0, 5, f"тел. {supplier['phone']}", ln=True)
     if supplier['bank']:
         pdf.cell(0, 5, supplier['bank'], ln=True)
-
+    
     # Покупатель
     pdf.ln(3)
     if buyer_name:
-        pdf.set_font('DejaVu', 'B', 10)
+        pdf.set_font(bold_font, 'B', 10)
         pdf.cell(0, 5, f"Покупатель: {buyer_name}", ln=True)
         if buyer_inn:
-            pdf.set_font('DejaVu', '', 10)
+            pdf.set_font(regular_font, '', 10)
             pdf.cell(0, 5, f"ИНН {buyer_inn}", ln=True)
-
+    
     # Заголовок КП
     pdf.ln(4)
-    pdf.set_font('DejaVu', 'B', 16)
+    pdf.set_font(bold_font, 'B', 16)
     title_text = "КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ"
     if kp_number:
         title_text += f" № {kp_number}"
     pdf.cell(0, 8, title_text, ln=True, align='C')
     if kp_date:
-        pdf.set_font('DejaVu', '', 10)
+        pdf.set_font(regular_font, '', 10)
         pdf.cell(0, 5, f"от {kp_date}", ln=True, align='C')
     pdf.ln(4)
-
+    
     # --- Таблица ---
-    # Заголовки таблицы
     headers = ['№', 'Наименование', 'Ед. изм.', 'Количество', 'Цена', 'Сумма']
     col_widths = [10, 70, 15, 20, 30, 30]
-    total_width = sum(col_widths)
-
-    # Рисуем таблицу
-    pdf.set_font('DejaVu', 'B', 9)
-    # Заголовок
+    
+    # Заголовки таблицы
+    pdf.set_font(bold_font, 'B', 9)
     for i, header in enumerate(headers):
         pdf.cell(col_widths[i], 7, header, border=1, align='C')
     pdf.ln()
-
+    
     # Данные
-    pdf.set_font('DejaVu', '', 9)
+    pdf.set_font(regular_font, '', 9)
     for idx, row in df.iterrows():
         new_price = row['Цена'] * (1 + markup/100)
         new_sum = row['Сумма'] * (1 + markup/100)
@@ -355,9 +379,9 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
         for i, cell in enumerate(data_row):
             pdf.cell(col_widths[i], 6, cell, border=1, align='C')
         pdf.ln()
-
+    
     # Итоги
-    pdf.set_font('DejaVu', 'B', 9)
+    pdf.set_font(bold_font, 'B', 9)
     pdf.cell(col_widths[0], 7, '', border=1)
     pdf.cell(col_widths[1], 7, '', border=1)
     pdf.cell(col_widths[2], 7, '', border=1)
@@ -365,7 +389,7 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
     pdf.cell(col_widths[4], 7, 'Итого:', border=1, align='R')
     pdf.cell(col_widths[5], 7, f"{new_total:,.2f}".replace(',', ' '), border=1, align='R')
     pdf.ln()
-
+    
     pdf.cell(col_widths[0], 7, '', border=1)
     pdf.cell(col_widths[1], 7, '', border=1)
     pdf.cell(col_widths[2], 7, '', border=1)
@@ -373,7 +397,7 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
     pdf.cell(col_widths[4], 7, 'Без налога (НДС):', border=1, align='R')
     pdf.cell(col_widths[5], 7, '—', border=1, align='R')
     pdf.ln()
-
+    
     pdf.cell(col_widths[0], 7, '', border=1)
     pdf.cell(col_widths[1], 7, '', border=1)
     pdf.cell(col_widths[2], 7, '', border=1)
@@ -381,36 +405,34 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
     pdf.cell(col_widths[4], 7, 'Всего:', border=1, align='R')
     pdf.cell(col_widths[5], 7, f"{new_total:,.2f}".replace(',', ' '), border=1, align='R')
     pdf.ln()
-
+    
     # Пропись суммы
     pdf.ln(3)
-    pdf.set_font('DejaVu', '', 10)
+    pdf.set_font(regular_font, '', 10)
     total_words = f"Всего наименований {len(df)}, на сумму {int(new_total)} рублей 00 копеек"
     pdf.cell(0, 6, total_words, ln=True)
-
+    
     # Условия оплаты
     if payment_terms:
         pdf.ln(2)
-        pdf.set_font('DejaVu', 'B', 10)
+        pdf.set_font(bold_font, 'B', 10)
         pdf.cell(0, 6, "Условия оплаты и доставки:", ln=True)
-        pdf.set_font('DejaVu', '', 10)
+        pdf.set_font(regular_font, '', 10)
         pdf.multi_cell(0, 5, payment_terms)
-
+    
     # Подпись
     pdf.ln(6)
-    # Сдвигаем вправо для подписи
-    pdf.set_font('DejaVu', '', 10)
     if signature_bytes:
-        # Вставляем изображение подписи
         with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
             tmp.write(signature_bytes)
             tmp_path = tmp.name
         pdf.image(tmp_path, x=120, y=pdf.get_y(), w=30)
         os.unlink(tmp_path)
         pdf.ln(8)
+    pdf.set_font(bold_font, 'B', 10)
     pdf.cell(0, 6, sign_position, ln=True, align='R')
     pdf.cell(0, 6, sign_name, ln=True, align='R')
-
+    
     # Получение бинарных данных PDF
     pdf_output = pdf.output(dest='S').encode('latin1')
     return io.BytesIO(pdf_output)
