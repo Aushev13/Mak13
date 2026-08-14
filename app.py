@@ -18,14 +18,8 @@ from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# --- Функция загрузки шрифта DejaVuSans (с поддержкой кириллицы) ---
+# --- Функция загрузки шрифта DejaVuSans ---
 def get_dejavu_font():
-    """
-    Скачивает DejaVuSans.ttf из интернета, если его нет в системе,
-    и регистрирует его для reportlab.
-    Возвращает имя шрифта ('DejaVuSans') или None.
-    """
-    # Проверяем системные пути (Ubuntu)
     system_paths = [
         '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
         '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
@@ -36,8 +30,6 @@ def get_dejavu_font():
         if os.path.exists(path):
             font_path = path
             break
-    
-    # Если системного нет, скачиваем во временную папку
     if font_path is None:
         font_dir = tempfile.gettempdir()
         font_path = os.path.join(font_dir, 'DejaVuSans.ttf')
@@ -49,7 +41,6 @@ def get_dejavu_font():
                 )
             except:
                 font_path = None
-    
     if font_path and os.path.exists(font_path):
         try:
             pdfmetrics.registerFont(TTFont('DejaVuSans', font_path))
@@ -59,7 +50,6 @@ def get_dejavu_font():
     else:
         return None
 
-# Регистрируем шрифт один раз при старте
 FONT_NAME = get_dejavu_font()
 if FONT_NAME is None:
     st.warning("⚠️ Шрифт для кириллицы не загружен. Буквы в PDF могут отображаться квадратами.")
@@ -310,18 +300,15 @@ def generate_pdf(df, markup, old_total, new_total, supplier, buyer_name, buyer_i
     elements = []
     styles = getSampleStyleSheet()
 
-    # Определяем шрифт (если загружен, используем его, иначе — Helvetica)
     font_name = FONT_NAME if FONT_NAME else 'Helvetica'
     if font_name == 'Helvetica':
         st.warning("⚠️ Шрифт для кириллицы не загружен. Буквы могут отображаться квадратами.")
 
-    # Стили с явным указанием шрифта
     title_style = ParagraphStyle('Title', parent=styles['Heading1'], alignment=TA_CENTER, fontSize=16, spaceAfter=6, fontName=font_name)
     header_style = ParagraphStyle('Header', parent=styles['Normal'], fontSize=9, textColor=colors.grey, fontName=font_name)
     company_style = ParagraphStyle('Company', parent=styles['Normal'], fontSize=10, leading=12, fontName=font_name)
     cell_style = ParagraphStyle('Cell', parent=styles['Normal'], fontSize=8, fontName=font_name)
     total_style = ParagraphStyle('Total', parent=styles['Normal'], fontSize=11, alignment=TA_RIGHT, spaceBefore=5, fontName=font_name)
-    total_bold_style = ParagraphStyle('TotalBold', parent=styles['Normal'], fontSize=11, alignment=TA_RIGHT, spaceBefore=5, fontName=font_name, fontName=font_name)
 
     # Логотип
     logo_img = None
